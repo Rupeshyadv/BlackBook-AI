@@ -5,7 +5,6 @@ import { db } from '@/lib/db'
 
 export async function POST(req: Request) {
     const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET
-    console.log('Webhook received')
 
     if (!WEBHOOK_SECRET) {
         return Response.json({ error: 'No webhook secret' }, { status: 500 })
