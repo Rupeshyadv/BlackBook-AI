@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  clerkId   String   @unique
+  email     String   @unique
+  name      String?
+  whatsapp  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  orders    Order[]
+}
+
+model Order {
+  id           String      @id @default(cuid())
+  userId       String
+  topic        String
+  course       String
+  collegeName  String
+  pageCount    Int
+  instructions String?
+  hasPPT       Boolean     @default(false)
+  hasWordFile  Boolean     @default(false)
+  isRush       Boolean     @default(false)
+  amount       Int
+  status       OrderStatus @default(PENDING)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  document     Document?
+  user         User        @relation(fields: [userId], references: [id])
+  payment      Payment?
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  orderId           String        @unique
+  razorpayOrderId   String        @unique
+  razorpayPaymentId String?
+  razorpaySignature String?
+  amount            Int
+  status            PaymentStatus @default(PENDING)
+  paidAt            DateTime?
+  createdAt         DateTime      @default(now())
+  order             Order         @relation(fields: [orderId], references: [id])
+}
+
+model Document {
+  id                String    @id @default(cuid())
+  orderId           String    @unique
+  referenceFileKey  String?
+  referenceFileType String?
+  docxKey           String?
+  pdfKey            String?
+  styleProfile      Json?
+  outline           Json?
+  agentLogs         Json?     @default("[]")
+  finalPageCount    Int?
+  generatedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  order             Order     @relation(fields: [orderId], references: [id])
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  PROCESSING
+  COMPLETED
+  DELIVERED
+  FAILED
+}
+
+enum PaymentStatus {
+  PENDING
+  CAPTURED
+  FAILED
+  REFUNDED
+}
