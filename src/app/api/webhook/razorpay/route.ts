@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { db } from '@/lib/db'
+import { inngest } from '@/inngest/client'
 
 export async function POST(req: Request) {
     const body = await req.text()
@@ -37,8 +38,27 @@ export async function POST(req: Request) {
             data: { status: 'PAID' }
         })
 
-        // TODO: trigger Inngest job here in next step
-        console.log('Payment captured for order:', orderId)
+        // trigger blackbook generation
+        await inngest.send({
+            name: 'blackbook/generate',
+            data: { orderId }
+        })
+
+        console.log('Job enqueued for order:', orderId)
+    }
+
+    if (event.event === 'payment.failed') {
+        const orderId = event.payload.payment.entity.notes.orderId
+
+        await db.payment.update({
+        where: { razorpayOrderId: event.payload.payment.entity.order_id },
+        data: { status: 'FAILED' }
+        })
+
+        await db.order.update({
+        where: { id: orderId },
+        data: { status: 'FAILED' }
+        })
     }
 
     return Response.json({ ok: true })
