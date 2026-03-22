@@ -1,5 +1,5 @@
 export default async function OrderStatusPage({ params }: { params: { id: string } }) {
-    const orderId = params?.id
+    const { id: orderId } = await params
     return (
         <div className="min-h-screen flex items-center justify-center bg-gray-50">
             <div className="bg-white rounded-2xl p-8 shadow-sm text-center max-w-md w-full">

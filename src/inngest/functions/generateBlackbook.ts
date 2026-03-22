@@ -5,13 +5,16 @@ export const generateBlackbook = inngest.createFunction(
   {
     id: 'generate-blackbook',
     retries: 3,
+    timeouts: {
+      finish: '30m',  // writing chapters takes time
+    },
   },
   { event: 'blackbook/generate' },
 
   async ({ event, step }) => {
     const { orderId } = event.data
 
-    // update status to PROCESSING
+    // mark as processing
     await step.run('update-status-processing', async () => {
       await db.order.update({
         where: { id: orderId },
@@ -19,28 +22,31 @@ export const generateBlackbook = inngest.createFunction(
       })
     })
 
-    // placeholder — agents coming soon
-    await step.run('parse-pdf', async () => {
-      console.log('TODO: parse PDF for order', orderId)
-      return { font: 'Times New Roman', bodyFontSize: 12 }
+    // agent 1 — extract style from reference PDF (or use BCom defaults)
+    const styleProfile = await step.run('parse-pdf', async () => {
+      const { parsePdf } = await import('@/lib/agents/pdfParser')
+      return parsePdf(orderId)
     })
 
-    await step.run('plan-outline', async () => {
-      console.log('TODO: plan outline for order', orderId)
-      return { chapters: [] }
+    // agent 2 — plan chapter outline + chart spec
+    const outline = await step.run('plan-outline', async () => {
+      const { planOutline } = await import('@/lib/agents/planner')
+      return planOutline(orderId, styleProfile)
     })
 
-    await step.run('write-chapters', async () => {
-      console.log('TODO: write chapters for order', orderId)
-      return []
+    // agent 3 — write all chapters + chart data in parallel
+    const writerOutput = await step.run('write-chapters', async () => {
+      const { writeChapters } = await import('@/lib/agents/writer')
+      return writeChapters(orderId, outline)
     })
 
-    await step.run('assemble-document', async () => {
-      console.log('TODO: assemble document for order', orderId)
-      return { docxUrl: null, pdfUrl: null }
+    // agent 4 — assemble DOCX + convert to PDF
+    const result = await step.run('assemble-document', async () => {
+      const { assembleDocument } = await import('@/lib/agents/assembler')
+      return assembleDocument(orderId, styleProfile, outline, writerOutput)
     })
 
-    // update status to COMPLETED
+    // mark as completed
     await step.run('update-status-completed', async () => {
       await db.order.update({
         where: { id: orderId },
@@ -48,6 +54,6 @@ export const generateBlackbook = inngest.createFunction(
       })
     })
 
-    return { success: true, orderId }
+    return { success: true, orderId, ...result }
   }
 )

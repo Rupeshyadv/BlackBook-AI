@@ -27,6 +27,8 @@ model Order {
   collegeName  String
   pageCount    Int
   instructions String?
+  guideName        String?
+  guideDesignation String?
   hasPPT       Boolean     @default(false)
   hasWordFile  Boolean     @default(false)
   isRush       Boolean     @default(false)
