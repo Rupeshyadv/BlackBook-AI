@@ -335,13 +335,6 @@ async function convertToPdf(docxBuffer: Buffer): Promise<Buffer> {
 // ─────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────
-function cp(text: string, size: number, s: StyleProfile): Paragraph {
-  return new Paragraph({
-    alignment: AlignmentType.CENTER,
-    children: [new TextRun({ text, font: s.font, size })]
-  })
-}
-
 function bp(text: string, s?: StyleProfile): Paragraph {
   const font = s?.font ?? 'Times New Roman'
   const size = s?.bodyFontSize ?? 24

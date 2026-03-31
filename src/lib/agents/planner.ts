@@ -1,8 +1,9 @@
 import { db } from '@/lib/db'
-import Anthropic from '@anthropic-ai/sdk'
+// import Anthropic from '@anthropic-ai/sdk'
 import { StyleProfile } from './pdfParser'
+import { generateText } from '../ai/client'
 
-const client = new Anthropic()
+// const client = new Anthropic()
 
 export interface Chapter {
   id: number
@@ -37,120 +38,186 @@ export async function planOutline(
   const contentPages = order.pageCount - 9
   const contentWords = contentPages * 250
 
-  const message = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 2048,
-    messages: [{
-      role: 'user',
-      content: `
-        You are an expert at creating Mumbai University BCom/BAF project report outlines.
+  const prompt = `
+Create a Mumbai University BCom/BAF blackbook outline.
 
-        Create a chapter outline for this blackbook:
-        Topic: ${order.topic}
-        Course: ${order.course}
-        Total pages: ${order.pageCount}
-        Content word budget: ${contentWords} words (after 9 pages of front matter template)
+Topic: ${order.topic}
+Course: ${order.course}
+Total Pages: ${order.pageCount}
+Content Word Budget: ${contentWords} (excluding ~9 pages front matter)
 
-        Return ONLY valid JSON, no explanation, no markdown:
-        {
-          "projectTitle": "proper full title for the project",
-          "topic": "${order.topic}",
-          "totalPages": ${order.pageCount},
-          "chapters": [
-            {
-              "id": 1,
-              "title": "Introduction",
-              "targetWordCount": 2000,
-              "type": "intro",
-              "sectionHeadings": [
-                "1.1 Background of the Study",
-                "1.2 Statement of the Problem",
-                "1.3 Objectives of the Study",
-                "1.4 Scope of the Study",
-                "1.5 Significance of the Study",
-                "1.6 Limitations of the Study",
-                "1.7 Conclusion"
-              ]
-            },
-            {
-              "id": 2,
-              "title": "Research Methodology",
-              "targetWordCount": 1800,
-              "type": "methodology",
-              "sectionHeadings": [
-                "2.1 Introduction",
-                "2.2 Research Design",
-                "2.3 Sources of Data",
-                "2.4 Data Collection Methods",
-                "2.5 Sampling Method",
-                "2.6 Tools and Techniques Used for Analysis",
-                "2.7 Limitations of the Methodology",
-                "2.8 Conclusion"
-              ]
-            },
-            {
-              "id": 3,
-              "title": "Review of Literature",
-              "targetWordCount": 2000,
-              "type": "literature",
-              "sectionHeadings": [
-                "3.1 Introduction",
-                "3.2 Review of Literature",
-                "3.3 Conclusion"
-              ]
-            },
-            {
-              "id": 4,
-              "title": "Data Analysis and Interpretation",
-              "targetWordCount": 2500,
-              "type": "analysis",
-              "sectionHeadings": [
-                "4.1 Introduction",
-                "4.2 Analysis and Interpretation",
-                "4.3 Conclusion"
-              ]
-            },
-            {
-              "id": 5,
-              "title": "Findings and Conclusion",
-              "targetWordCount": 1500,
-              "type": "findings",
-              "sectionHeadings": [
-                "5.1 Findings",
-                "5.2 Suggestions",
-                "5.3 Conclusion"
-              ]
-            }
-          ],
-          "chart": {
-            "chapterId": 4,
-            "type": "bar",
-            "title": "relevant chart title for ${order.topic}",
-            "description": "what real-world data this chart shows",
-            "unit": "%"
-          }
-        }
+Return ONLY valid JSON:
+{
+  "projectTitle": "academic title specific to topic",
+  "topic": "${order.topic}",
+  "totalPages": ${order.pageCount},
+  "chapters": [
+    {
+      "id": number,
+      "title": string,
+      "targetWordCount": number,
+      "type": "intro|methodology|literature|analysis|findings",
+      "sectionHeadings": string[]
+    }
+  ],
+  "chart": {
+    "chapterId": number,
+    "type": "bar|pie|line",
+    "title": "relevant to topic",
+    "description": "what data it represents",
+    "unit": "%"
+  }
+}
 
-        Rules:
-        - projectTitle must be a proper academic title specific to: ${order.topic}
-        - sectionHeadings must be specific to the topic, not generic
-        - totalWordCount across all chapters must equal exactly ${contentWords}
-        - chart type (bar/pie/line) must be whichever makes most sense for the data
-        - chart must show realistic, relevant data for: ${order.topic}`
-    }]
-  })
+Constraints:
+- 5 chapters exactly: Introduction, Research Methodology, Review of Literature, Data Analysis and Interpretation, Findings and Conclusion
+- Sections must be topic-specific (not generic placeholders)
+- Total of all targetWordCount MUST equal ${contentWords}
+- Word distribution should be realistic (analysis highest, findings lowest)
+- projectTitle must be formal and topic-specific
+- Chart must be realistic, relevant, and suited to topic
+- Choose chart type based on data suitability
+`
 
-  const text = message.content[0].type === 'text' ? message.content[0].text : ''
-  const cleaned = text.replace(/```json|```/g, '').trim()
-
+  const text = await generateText(prompt, 4096)
+  
   try {
+    const cleaned = extractAndCleanJSON(text)
     const outline = JSON.parse(cleaned) as Outline
+
     await db.document.update({
       where: { orderId },
       data: { outline: outline as any }
     })
+
     return outline
-  } catch (err) {
-    throw new Error(`Planner failed to parse outline: ${err}`)
+  } 
+  catch (err) {
+    console.error('Planner JSON parse failed, using fallback outline:', err)
+    console.error('Raw response was:', text.slice(0, 500))
+
+    // fallback — hardcoded BCom structure so pipeline continues
+    const contentPages = order.pageCount
+    const contentWords = contentPages * 250
+    const perChapter = Math.floor(contentWords / 5)
+
+    const fallbackOutline: Outline = {
+      topic: order.topic,
+      totalPages: order.pageCount,
+      chapters: [
+        {
+          id: 1,
+          title: 'Introduction',
+          targetWordCount: perChapter,
+          type: 'intro',
+          sectionHeadings: [
+            '1.1 Background of the Study',
+            '1.2 Statement of the Problem',
+            '1.3 Objectives of the Study',
+            '1.4 Scope of the Study',
+            '1.5 Significance of the Study',
+            '1.6 Limitations of the Study',
+            '1.7 Conclusion',
+          ]
+        },
+        {
+          id: 2,
+          title: 'Research Methodology',
+          targetWordCount: perChapter,
+          type: 'methodology',
+          sectionHeadings: [
+            '2.1 Introduction',
+            '2.2 Research Design',
+            '2.3 Sources of Data',
+            '2.4 Data Collection Methods',
+            '2.5 Sampling Method',
+            '2.6 Tools and Techniques Used for Analysis',
+            '2.7 Limitations of the Methodology',
+            '2.8 Conclusion',
+          ]
+        },
+        {
+          id: 3,
+          title: 'Review of Literature',
+          targetWordCount: perChapter,
+          type: 'literature',
+          sectionHeadings: [
+            '3.1 Introduction',
+            '3.2 Review of Literature',
+            '3.3 Conclusion',
+          ]
+        },
+        {
+          id: 4,
+          title: 'Data Analysis and Interpretation',
+          targetWordCount: perChapter,
+          type: 'analysis',
+          sectionHeadings: [
+            '4.1 Introduction',
+            '4.2 Analysis and Interpretation',
+            '4.3 Conclusion',
+          ]
+        },
+        {
+          id: 5,
+          title: 'Findings and Conclusion',
+          targetWordCount: perChapter,
+          type: 'findings',
+          sectionHeadings: [
+            '5.1 Findings',
+            '5.2 Suggestions',
+            '5.3 Conclusion',
+          ]
+        },
+      ],
+      chart: {
+        chapterId: 4,
+        type: 'bar',
+        title: `Analysis of ${order.topic}`,
+        description: `Key findings related to ${order.topic}`,
+        unit: '%',
+      }
+    }
+
+    await db.document.update({
+      where: { orderId },
+      data: { outline: fallbackOutline as any }
+    })
+
+    return fallbackOutline
   }
+}
+
+function extractAndCleanJSON(text: string): string {
+  // step 1 — try to find JSON block between { and }
+  const firstBrace = text.indexOf('{')
+  const lastBrace = text.lastIndexOf('}')
+  
+  if (firstBrace === -1 || lastBrace === -1) {
+    throw new Error('No JSON object found in response')
+  }
+  
+  let jsonStr = text.slice(firstBrace, lastBrace + 1)
+  
+  // step 2 — remove markdown code fences if present
+  jsonStr = jsonStr.replace(/```json|```/g, '')
+  
+  // step 3 — remove bad control characters
+  // these are characters with char codes 0-31 except tab(9), newline(10), carriage return(13)
+  jsonStr = jsonStr.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+  
+  // step 4 — fix unescaped newlines inside string values
+  // this is the main culprit with local models
+  jsonStr = jsonStr.replace(/"([^"]*?)"/g, (match, content) => {
+    const escaped = content
+      .replace(/\n/g, ' ')      // newlines → space
+      .replace(/\r/g, ' ')      // carriage returns → space
+      .replace(/\t/g, ' ')      // tabs → space
+    return `"${escaped}"`
+  })
+  
+  // step 5 — remove trailing commas before } or ] (common local model mistake)
+  jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1')
+  
+  return jsonStr.trim()
 }
