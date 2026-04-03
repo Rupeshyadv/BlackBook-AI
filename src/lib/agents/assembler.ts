@@ -2,14 +2,13 @@ import {
   Document, Packer, Paragraph, TextRun,
   AlignmentType, LineRuleType, PageNumber, Footer,
   PageBreak, ImageRun, Table, TableRow, TableCell,
-  WidthType, BorderStyle, SectionType, VerticalAlign,
+  WidthType, SectionType, ShadingType, BorderStyle
 } from 'docx'
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { db } from '@/lib/db'
 import { StyleProfile } from './pdfParser'
-import { Outline } from './planner'
-import { WriterOutput } from './writer'
-import { renderChartToPng } from '@/lib/charts/chartRenderer'
+import { Outline, SurveyQuestion } from './planner'
+import { ChapterContent, WriterOutput } from './writer'
 
 const r2 = new S3Client({
   region: 'auto',
@@ -32,7 +31,8 @@ export async function assembleDocument(
   if (!order) throw new Error('Order not found')
 
   // render chart to PNG
-  const chartPng = await renderChartToPng(writerOutput.chartData)
+  const { renderAllSurveyCharts } = await import('@/lib/charts/chartRenderer')
+  const chartPngs = await renderAllSurveyCharts(outline.surveyQuestions ?? [])
 
   // build document
   const doc = new Document({
@@ -55,7 +55,7 @@ export async function assembleDocument(
       }
     },
     sections: [
-      buildChapterSection(outline, writerOutput, chartPng, style),
+      buildChapterSection(outline, writerOutput, chartPngs, style),
     ]
   })
 
@@ -75,6 +75,7 @@ export async function assembleDocument(
   try {
     const pdfBuffer = await convertToPdf(docxBuffer)
     pdfKey = `outputs/${orderId}/blackbook.pdf`
+
     await r2.send(new PutObjectCommand({
       Bucket: process.env.R2_BUCKET_NAME!,
       Key: pdfKey,
@@ -95,164 +96,147 @@ export async function assembleDocument(
   return { docxKey, pdfKey }
 }
 
-// ─────────────────────────────────────────
 // CHAPTERS
-// ─────────────────────────────────────────
 function buildChapterSection(
   outline: Outline,
   writerOutput: WriterOutput,
-  chartPng: Buffer,
-  s: StyleProfile,
+  chartPngs: Map<number, Buffer>,
+  style: StyleProfile,
 ) {
-  const children: Paragraph[] = []
+  const children: (Paragraph | Table)[] = []
 
-  writerOutput.chapters.forEach((chapter, idx) => {
+  const writtenChapters = new Map(
+    writerOutput.chapters.map(ch => [ch.type, ch] as [string, ChapterContent])
+  )
+
+  outline.chapters.forEach((chapter, idx) => {
     const chapterNum = idx + 1
 
-    // CHAPTER NO. heading
+    if (idx > 0) {
+      children.push(new Paragraph({ children: [new PageBreak()] }))
+    }
+
+    if (chapter.type === 'analysis') {
+      // Chapter 4 — built from survey questions
+      const chapter4Children = buildChapter4(
+        outline.surveyQuestions,
+        style,
+        chartPngs
+      )
+      children.push(...chapter4Children)
+      return
+    }
+
+    // all other chapters — use written content
+    const writtenChapter = writtenChapters.get(chapter.type)
+    if (!writtenChapter) return
+
+    // chapter heading
     children.push(
       new Paragraph({
-        alignment: AlignmentType.LEFT,
-        spacing: { after: 0 },
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 0, after: 0 },
         children: [new TextRun({
           text: `CHAPTER NO. ${chapterNum}`,
-          font: s.font,
-          size: s.headingFontSize,
+          font: style.font,
+          size: style.headingFontSize,
           bold: true,
         })]
       }),
       new Paragraph({
-        alignment: AlignmentType.LEFT,
-        spacing: { after: 240 },
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 0, after: 280 },
         children: [new TextRun({
           text: chapter.title.toUpperCase(),
-          font: s.font,
-          size: s.headingFontSize,
+          font: style.font,
+          size: style.headingFontSize,
           bold: true,
         })]
       }),
     )
 
-    // write each section
-    chapter.sections.forEach(section => {
-      // section heading
-      children.push(new Paragraph({
-        spacing: { before: 240, after: 120 },
-        children: [new TextRun({
-          text: section.heading,
-          font: s.font,
-          size: s.headingFontSize,
-          bold: true,
-        })]
-      }))
-
-      // section paragraphs
-      const paras = section.content.split('\n\n').filter(p => p.trim())
-      paras.forEach(para => {
-        children.push(new Paragraph({
-          alignment: AlignmentType.JUSTIFIED,
-          spacing: {
-            line: s.lineSpacing,
-            lineRule: LineRuleType.AUTO,
-            after: s.paragraphSpacingAfter,
-          },
+    // sections
+    writtenChapter.sections.forEach(section => {
+      children.push(
+        new Paragraph({
+          alignment: AlignmentType.LEFT,
+          spacing: { before: 240, after: 120 },
           children: [new TextRun({
-            text: para.trim(),
-            font: s.font,
-            size: s.bodyFontSize,
+            text: section.heading,
+            font: style.font,
+            size: style.headingFontSize,
+            bold: true,
           })]
-        }))
-      })
+        })
+      )
 
-      // add chart after analysis section
-      if (chapter.type === 'analysis' &&
-        section.heading.includes('4.2')) {
-        // chart table first
+      const paras = section.content
+        .split('\n\n')
+        .map(p => p.trim())
+        .filter(p => p.length > 0)
+
+      paras.forEach(para => {
         children.push(
-          sp(200),
           new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 120 },
+            alignment: AlignmentType.JUSTIFIED,
+            spacing: {
+              line: style.lineSpacing,
+              lineRule: LineRuleType.AUTO,
+              after: style.paragraphSpacingAfter,
+            },
             children: [new TextRun({
-              text: `Table 4.1: ${writerOutput.chartData.title}`,
-              font: s.font,
-              size: s.bodyFontSize,
-              bold: true,
+              text: para,
+              font: style.font,
+              size: style.bodyFontSize,
             })]
-          }),
-          buildDataTable(writerOutput.chartData, s),
-          sp(400),
-          // chart image
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            children: [
-              new ImageRun({
-                data: chartPng,
-                transformation: { width: 480, height: 300 },
-                type: 'png',
-              })
-            ]
-          }),
-          new Paragraph({
-            alignment: AlignmentType.CENTER,
-            spacing: { after: 240 },
-            children: [new TextRun({
-              text: `Graph 4.1: ${writerOutput.chartData.title}`,
-              font: s.font,
-              size: s.bodyFontSize,
-              bold: true,
-              italics: true,
-            })]
-          }),
-          sp(200),
+          })
         )
-      }
+      })
     })
 
-    // REFERENCES at end of each chapter
+    // references at end of each chapter
     children.push(
-      sp(200),
       new Paragraph({
+        alignment: AlignmentType.LEFT,
         spacing: { before: 240, after: 120 },
         children: [new TextRun({
           text: 'REFERENCES',
-          font: s.font,
-          size: s.headingFontSize,
+          font: style.font,
+          size: style.headingFontSize,
           bold: true,
         })]
       }),
-      bp(`[1] Reference relevant to ${chapter.title} and ${outline.topic}.`, s),
-      bp(`[2] Reference relevant to ${chapter.title} and ${outline.topic}.`, s),
-      bp(`[3] Reference relevant to ${chapter.title} and ${outline.topic}.`, s),
+      bp(`[1] Reference for ${chapter.title}.`, style),
+      bp(`[2] Reference for ${chapter.title}.`, style),
+      bp(`[3] Reference for ${chapter.title}.`, style),
     )
-
-    // page break between chapters
-    if (idx < writerOutput.chapters.length - 1) {
-      children.push(new Paragraph({ children: [new PageBreak()] }))
-    }
   })
 
-  // BIBLIOGRAPHY
+  // bibliography
   children.push(
     new Paragraph({ children: [new PageBreak()] }),
-    ph('BIBLIOGRAPHY', s),
-    sp(200),
-    bp(`1. Books and journals related to ${outline.topic}.`, s),
-    bp(`2. Research papers on ${outline.topic}.`, s),
-    bp(`3. Websites and online resources consulted during the preparation of this project.`, s),
-    sp(200),
-    bp('Websites:', s),
-    bp('• www.rbi.org.in', s),
-    bp('• www.sebi.gov.in', s),
-    bp('• www.moneycontrol.com', s),
-  )
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 280 },
+      children: [new TextRun({
+        text: 'BIBLIOGRAPHY',
+        font: style.font,
+        size: style.headingFontSize,
+        bold: true,
+      })]
+    }),
+    bp('1. Books and publications related to the topic.', style),
+    bp('2. Research papers and academic journals consulted.', style),
+    bp('3. Online resources and websites.', style),
+  )  
 
   return {
     properties: {
       type: SectionType.NEXT_PAGE,
       page: {
-        margin: s.margins,
-        pageNumbers: { start: 1, formatType: 'decimal' as any }
+        size: { width: 11906, height: 16838 },
+        margin: style.margins,
+        pageNumbers: { start: 1, formatType: 'decimal' }
       }
     },
     footers: {
@@ -261,8 +245,8 @@ function buildChapterSection(
           alignment: AlignmentType.CENTER,
           children: [new TextRun({
             children: [PageNumber.CURRENT],
-            font: s.font,
-            size: s.bodyFontSize,
+            font: style.font,
+            size: style.bodyFontSize,
           })]
         })]
       })
@@ -271,48 +255,199 @@ function buildChapterSection(
   }
 }
 
-// ─────────────────────────────────────────
-// TABLES
-// ─────────────────────────────────────────
-function buildDataTable(chartData: any, s: StyleProfile): Table {
-  const headerRow = new TableRow({
-    children: [
-      tc('Sr. No.', s, true),
-      tc('Particulars', s, true),
-      tc(`No. of Respondents`, s, true),
-      tc(`Percentage (%)`, s, true),
-    ]
-  })
+function buildChapter4(
+  questions: SurveyQuestion[],
+  style: StyleProfile,
+  chartPngs: Map<number, Buffer>
+): (Paragraph | Table)[] {
+  const children: (Paragraph | Table)[] = []
 
-  const dataRows = chartData.labels.map((label: string, i: number) =>
-    new TableRow({
-      children: [
-        tc(String(i + 1), s),
-        tc(label, s),
-        tc(String(Math.round(chartData.values[i])), s),
-        tc(`${chartData.values[i]}${chartData.unit}`, s),
-      ]
-    })
+  // Chapter heading
+  children.push(
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({ text: 'CHAPTER NO. 4', font: style.font, size: style.headingFontSize, bold: true })]
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 120 },
+      children: [new TextRun({ text: 'DATA ANALYSIS AND INTERPRETATION', font: style.font, size: style.headingFontSize, bold: true })]
+    }),
+    new Paragraph({
+      spacing: { after: 240 },
+      children: [new TextRun({ text: '4.1 PERCENTAGE ANALYSIS', font: style.font, size: style.headingFontSize, bold: true })]
+    }),
   )
 
-  const totalRow = new TableRow({
-    children: [
-      tc('', s, true),
-      tc('Total', s, true),
-      tc('100', s, true),
-      tc('100%', s, true),
-    ]
+  // each survey question block
+  questions.forEach((q) => {
+    // Question text
+    children.push(
+      new Paragraph({
+        spacing: { before: 240, after: 120 },
+        children: [new TextRun({
+          text: `${q.number}. ${q.question}`,
+          font: style.font,
+          size: style.headingFontSize,
+          bold: true,
+        })]
+      }),
+    )
+
+    // Data table
+    children.push(buildSurveyTable(q, style))
+
+    // Table caption
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 80, after: 80 },
+        children: [new TextRun({
+          text: `${q.tableTitle}`,
+          font: style.font,
+          size: style.bodyFontSize,
+          bold: true,
+        })]
+      }),
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 200 },
+        children: [new TextRun({
+          text: 'SOURCE: Primary Data and Secondary Data',
+          font: style.font,
+          size: style.bodyFontSize,
+          italics: true,
+        })]
+      }),
+    )
+
+    // Chart image
+    const chartPng = chartPngs.get(q.number)
+    if (chartPng) {
+      children.push(
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [
+            new ImageRun({
+              data: chartPng,
+              transformation: { width: 400, height: 250 },
+              type: 'png',
+            })
+          ]
+        }),
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          spacing: { before: 80, after: 200 },
+          children: [new TextRun({
+            text: q.graphTitle,
+            font: style.font,
+            size: style.bodyFontSize,
+            bold: true,
+          })]
+        }),
+      )
+    }
+
+    // Interpretation
+    children.push(
+      new Paragraph({
+        spacing: { after: 80 },
+        children: [
+          new TextRun({ text: 'INTERPRETATION: ', font: style.font, size: style.bodyFontSize, bold: true }),
+          new TextRun({ text: q.interpretation, font: style.font, size: style.bodyFontSize }),
+        ]
+      }),
+    )
+
+    // Inference
+    children.push(
+      new Paragraph({
+        spacing: { after: 320 },
+        children: [
+          new TextRun({ text: 'INFERENCE: ', font: style.font, size: style.bodyFontSize, bold: true }),
+          new TextRun({ text: q.inference, font: style.font, size: style.bodyFontSize }),
+        ]
+      }),
+    )
   })
 
+  return children
+}
+
+function buildSurveyTable(q: SurveyQuestion, style: StyleProfile): Table {
+  const col1 = 800    // Sr. No.
+  const col2 = 4200   // Particulars
+  const col3 = 2000   // No. of Respondents
+  const col4 = 1800   // Percentage
+  const total = col1 + col2 + col3 + col4
+
+  const hCell = (text: string, width: number) => new TableCell({
+    width: { size: width, type: WidthType.DXA },
+    shading: { fill: 'D9D9D9', type: ShadingType.CLEAR },
+    margins: { top: 80, bottom: 80, left: 120, right: 120 },
+    children: [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [new TextRun({ text, font: style.font, size: style.bodyFontSize, bold: true })]
+    })]
+  })
+
+  const dCell = (text: string, width: number, center = true) => new TableCell({
+    width: { size: width, type: WidthType.DXA },
+    margins: { top: 80, bottom: 80, left: 120, right: 120 },
+    children: [new Paragraph({
+      alignment: center ? AlignmentType.CENTER : AlignmentType.LEFT,
+      children: [new TextRun({ text, font: style.font, size: style.bodyFontSize })]
+    })]
+  })
+
+  const totalRespondents = q.respondents.reduce((a, b) => a + b, 0)
+
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
-    rows: [headerRow, ...dataRows, totalRow],
+    width: { size: total, type: WidthType.DXA },
+    columnWidths: [col1, col2, col3, col4],
+    borders: {
+      top: { style: BorderStyle.SINGLE, size: 4 },
+      bottom: { style: BorderStyle.SINGLE, size: 4 },
+      left: { style: BorderStyle.SINGLE, size: 4 },
+      right: { style: BorderStyle.SINGLE, size: 4 },
+      insideHorizontal: { style: BorderStyle.SINGLE, size: 4 },
+      insideVertical: { style: BorderStyle.SINGLE, size: 4 },
+    },
+    rows: [
+      // header
+      new TableRow({
+        children: [
+          hCell('Sr. No.', col1),
+          hCell('Particulars', col2),
+          hCell('No. of Respondents', col3),
+          hCell('Percentage (%)', col4),
+        ]
+      }),
+      // data rows
+      ...q.options.map((option: string, i: number) =>
+        new TableRow({
+          children: [
+            dCell(String(i + 1), col1),
+            dCell(option, col2, false),
+            dCell(String(q.respondents[i]), col3),
+            dCell(q.percentages[i], col4),
+          ]
+        })
+      ),
+      // total row
+      new TableRow({
+        children: [
+          dCell('', col1),
+          dCell('Total', col2, false),
+          dCell(String(totalRespondents), col3),
+          dCell('100%', col4),
+        ]
+      }),
+    ]
   })
 }
 
-// ─────────────────────────────────────────
 // GOTENBERG
-// ─────────────────────────────────────────
 async function convertToPdf(docxBuffer: Buffer): Promise<Buffer> {
   const formData = new FormData()
   formData.append(
@@ -332,14 +467,12 @@ async function convertToPdf(docxBuffer: Buffer): Promise<Buffer> {
   return Buffer.from(await res.arrayBuffer())
 }
 
-// ─────────────────────────────────────────
 // HELPERS
-// ─────────────────────────────────────────
-function bp(text: string, s?: StyleProfile): Paragraph {
-  const font = s?.font ?? 'Times New Roman'
-  const size = s?.bodyFontSize ?? 24
-  const spacing = s?.lineSpacing ?? 360
-  const after = s?.paragraphSpacingAfter ?? 120
+function bp(text: string, style?: StyleProfile): Paragraph {
+  const font = style?.font ?? 'Times New Roman'
+  const size = style?.bodyFontSize ?? 24
+  const spacing = style?.lineSpacing ?? 360
+  const after = style?.paragraphSpacingAfter ?? 120
   return new Paragraph({
     alignment: AlignmentType.JUSTIFIED,
     spacing: { line: spacing, lineRule: LineRuleType.AUTO, after },
@@ -347,14 +480,14 @@ function bp(text: string, s?: StyleProfile): Paragraph {
   })
 }
 
-function ph(text: string, s: StyleProfile): Paragraph {
+function ph(text: string, style: StyleProfile): Paragraph {
   return new Paragraph({
     alignment: AlignmentType.CENTER,
     spacing: { after: 240 },
     children: [new TextRun({
       text,
-      font: s.font,
-      size: s.headingFontSize,
+      font: style.font,
+      size: style.headingFontSize,
       bold: true,
     })]
   })
@@ -364,26 +497,5 @@ function sp(space: number): Paragraph {
   return new Paragraph({
     children: [new TextRun({ text: '' })],
     spacing: { before: space }
-  })
-}
-
-function tc(text: string, s: StyleProfile, bold = false): TableCell {
-  return new TableCell({
-    verticalAlign: VerticalAlign.CENTER,
-    children: [new Paragraph({
-      alignment: AlignmentType.CENTER,
-      children: [new TextRun({
-        text,
-        font: s.font,
-        size: s.bodyFontSize,
-        bold,
-      })]
-    })],
-    borders: {
-      top: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-      bottom: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-      left: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-      right: { style: BorderStyle.SINGLE, size: 1, color: '000000' },
-    }
   })
 }

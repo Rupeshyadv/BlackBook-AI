@@ -13,19 +13,25 @@ export interface Chapter {
   sectionHeadings: string[]
 }
 
-export interface ChartSpec {
-  chapterId: number
-  type: 'bar' | 'pie' | 'line'
-  title: string
-  description: string
-  unit: string
+export interface SurveyQuestion {
+  number: number
+  question: string
+  tableTitle: string
+  options: string[]           // 4 options (Particulars)
+  respondents: number[]       // No. of Respondents for each option
+  percentages: string[]       // Percentage for each
+  chartType: 'bar' | 'pie'
+  graphTitle: string
+  interpretation: string
+  inference: string
 }
 
 export interface Outline {
   topic: string
   totalPages: number
   chapters: Chapter[]
-  chart: ChartSpec
+  surveyQuestions: SurveyQuestion[]
+  projectTitle?: string
 }
 
 export async function planOutline(
@@ -35,7 +41,7 @@ export async function planOutline(
   const order = await db.order.findUnique({ where: { id: orderId } })
   if (!order) throw new Error('Order not found')
 
-  const contentPages = order.pageCount - 9
+  const contentPages = order.pageCount
   const contentWords = contentPages * 250
 
   const prompt = `
@@ -44,7 +50,7 @@ Create a Mumbai University BCom/BAF blackbook outline.
 Topic: ${order.topic}
 Course: ${order.course}
 Total Pages: ${order.pageCount}
-Content Word Budget: ${contentWords} (excluding ~9 pages front matter)
+Content Word Budget: ${contentWords}
 
 Return ONLY valid JSON:
 {
@@ -60,13 +66,20 @@ Return ONLY valid JSON:
       "sectionHeadings": string[]
     }
   ],
-  "chart": {
-    "chapterId": number,
-    "type": "bar|pie|line",
-    "title": "relevant to topic",
-    "description": "what data it represents",
-    "unit": "%"
-  }
+  "surveyQuestions": [
+    {
+      "number": 1,
+      "question": "survey question relevant to ${order.topic}?",
+      "tableTitle": "TABLE 4.1.1 <SHORT TITLE IN CAPS>?",
+      "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+      "respondents": [17, 12, 8, 4],
+      "percentages": ["41.5%", "29.3%", "19.5%", "9.8%"],
+      "chartType": "bar",
+      "graphTitle": "Graph No 4.1.1 Short Title",
+      "interpretation": "The table shows that [highest %] of respondents...",
+      "inference": "The findings indicate that..."
+    }
+  ]
 }
 
 Constraints:
@@ -74,9 +87,14 @@ Constraints:
 - Sections must be topic-specific (not generic placeholders)
 - Total of all targetWordCount MUST equal ${contentWords}
 - Word distribution should be realistic (analysis highest, findings lowest)
-- projectTitle must be formal and topic-specific
-- Chart must be realistic, relevant, and suited to topic
-- Choose chart type based on data suitability
+- Generate exactly 10 survey questions relevant to ${order.topic}
+- Each question must have exactly 4 options
+- Respondents must be realistic numbers that sum to 41 (standard sample size) and make sure the total respondents must be same for all the questions
+- Percentages must match respondents (e.g. 17/41 = 41.5%)
+- chartType should be "bar" for most, "pie" for demographic questions (age, gender)
+- interpretation must start with "The table shows that"
+- inference must start with "The findings indicate that" or "With X% of respondents"
+- tableTitle must be in CAPS and describe the data
 `
 
   const text = await generateText(prompt, 4096)
@@ -148,17 +166,6 @@ Constraints:
           ]
         },
         {
-          id: 4,
-          title: 'Data Analysis and Interpretation',
-          targetWordCount: perChapter,
-          type: 'analysis',
-          sectionHeadings: [
-            '4.1 Introduction',
-            '4.2 Analysis and Interpretation',
-            '4.3 Conclusion',
-          ]
-        },
-        {
           id: 5,
           title: 'Findings and Conclusion',
           targetWordCount: perChapter,
@@ -170,13 +177,6 @@ Constraints:
           ]
         },
       ],
-      chart: {
-        chapterId: 4,
-        type: 'bar',
-        title: `Analysis of ${order.topic}`,
-        description: `Key findings related to ${order.topic}`,
-        unit: '%',
-      }
     }
 
     await db.document.update({

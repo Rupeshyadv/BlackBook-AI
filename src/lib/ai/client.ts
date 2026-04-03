@@ -15,13 +15,14 @@ export async function generateText(
     })
 
     const response = await openai.chat.completions.create({
-      model: 'tinyllama',
+      model: 'llama3.2',
       max_tokens: maxTokens,
       messages: [{ role: 'user', content: prompt }],
     })
 
     return response.choices[0].message.content ?? ''
-  } else {
+  } 
+  else {
     const client = new Anthropic()
 
     const response = await client.messages.create({

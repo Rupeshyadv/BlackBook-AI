@@ -1,5 +1,6 @@
 import { createCanvas } from 'canvas'
 import { Chart, ChartConfiguration } from 'chart.js/auto'
+import { SurveyQuestion } from '../agents/planner'
 
 export interface ChartData {
   type: 'bar' | 'pie' | 'line'
@@ -9,7 +10,26 @@ export interface ChartData {
   unit?: string // e.g. "%" or "₹ Crore"
 }
 
-export async function renderChartToPng(data: ChartData): Promise<Buffer> {
+export async function renderAllSurveyCharts(
+  questions: SurveyQuestion[]
+): Promise<Map<number, Buffer>> {
+  const chartPngs = new Map<number, Buffer>()
+
+  for (const q of questions) {
+    const buffer = await renderChartToPng({
+      type: q.chartType,
+      title: q.graphTitle,
+      labels: q.options,
+      values: q.respondents,
+      unit: '',
+    })
+    chartPngs.set(q.number, buffer)
+  }
+
+  return chartPngs
+}
+
+async function renderChartToPng(data: ChartData): Promise<Buffer> {
   const width = 600
   const height = 380
   const canvas = createCanvas(width, height)

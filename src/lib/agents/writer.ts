@@ -1,5 +1,5 @@
 // import Anthropic from '@anthropic-ai/sdk'
-import { Outline, Chapter, ChartSpec } from './planner'
+import { Outline, Chapter, SurveyQuestion } from './planner'
 import { generateText } from '../ai/client'
 
 // const client = new Anthropic()
@@ -26,7 +26,6 @@ export interface ChartData {
 
 export interface WriterOutput {
   chapters: ChapterContent[]
-  chartData: ChartData
 }
 
 export async function writeChapters(
@@ -38,24 +37,15 @@ export async function writeChapters(
     ['intro', 'methodology', 'literature', 'analysis', 'findings'].includes(ch.type)
   )
 
-  // start chart generation immediately (non-blocking)
-  const chartPromise = generateChartData(
-    outline.chart,
-    outline.topic,
-    outline.topic
-  )
-
   // run chapters sequentially
   const chapters = []
   for (const ch of contentChapters) {
     const result = await writeChapter(ch, outline)
+
     chapters.push(result)
   }
 
-  // wait for chart when needed
-  const chartData = await chartPromise
-
-  return { chapters, chartData }
+  return { chapters }
 }
 
 // writes a single chapter
@@ -63,12 +53,16 @@ async function writeChapter(
   chapter: Chapter,
   outline: Outline
 ): Promise<ChapterContent> {
+
+  // sometimes the planner returns the chapter without section headings, so add defaults if missing
+  const defaultHeadings = chapter.sectionHeadings ?? [] 
+
   const prompt = `
     You are a Mumbai University BCom student writing your project report blackbook.
     Write Chapter ${chapter.id} — ${chapter.title} for your project titled: ${outline.topic}
 
     SECTIONS TO COVER:
-    ${chapter.sectionHeadings.map((h, i) => `${i + 1}. ${h}`).join('\n')}
+    ${defaultHeadings.map((h, i) => `${i + 1}. ${h}`).join('\n')}
 
     TARGET: approximately ${chapter.targetWordCount} words total
 
@@ -93,16 +87,16 @@ async function writeChapter(
 
     FORMAT — use exactly this separator:
 
-    SECTION: ${chapter.sectionHeadings[0]}
+    SECTION: ${chapter.sectionHeadings[0]}\n
     [paragraphs]
 
-    SECTION: ${chapter.sectionHeadings[1]}
+    SECTION: ${chapter.sectionHeadings[1]}\n
     [paragraphs]
 
-    Continue for all ${chapter.sectionHeadings.length} sections.`
+    Continue for all ${defaultHeadings.length} sections.`
 
   const text = await generateText(prompt, 4096)
-  const sections = parseSections(text, chapter.sectionHeadings)
+  const sections = parseSections(text, defaultHeadings)
 
   return {
     id: chapter.id,

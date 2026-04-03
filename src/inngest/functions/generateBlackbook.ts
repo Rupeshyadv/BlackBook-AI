@@ -40,6 +40,13 @@ export const generateBlackbook = inngest.createFunction(
       return writeChapters(orderId, outline)
     })
 
+    const chartPngs = await step.run('render-charts', async () => {
+      const { renderAllSurveyCharts } = await import('@/lib/charts/chartRenderer')
+      // can't pass Buffers through Inngest steps — render in assembler instead
+      // just return the question data, rendering happens in assemble step
+      return outline.surveyQuestions
+    })
+
     // agent 4 — assemble DOCX + convert to PDF
     const result = await step.run('assemble-document', async () => {
       const { assembleDocument } = await import('@/lib/agents/assembler')
